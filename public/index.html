@@ -41,15 +41,15 @@
       <main class="main-panel">
         <header class="topbar">
           <div class="header-brand">
-            <div class="header-brand-fallback"><span class="header-mark" aria-hidden="true">◉</span><span><strong>Orefyspace AI</strong><small>BUILD · AUTOMATE · SCALE</small></span></div>
+            <div class="header-brand-fallback"><span class="header-mark" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M24 8.5a15.5 15.5 0 1 0 15.5 15.5" stroke="currentColor" stroke-width="3.3" stroke-linecap="round"/><path d="M39.5 14.5a15.5 15.5 0 0 0-15.5-6" stroke="currentColor" stroke-width="3.3" stroke-linecap="round"/><circle cx="15.2" cy="19" r="3.5" fill="currentColor"/><circle cx="27.4" cy="30.3" r="3.5" fill="currentColor"/><circle cx="35.2" cy="13.2" r="3.2" fill="currentColor"/></svg></span><span><strong>Orefyspace <em>AI</em></strong><small>BUILD · AUTOMATE · SCALE</small></span></div>
           </div>
           <div class="topbar-title" id="topbar-title">New conversation</div>
-          <div class="topbar-actions"><button class="icon-button menu-button" id="open-sidebar" aria-label="Open workspace menu">◧</button><button class="icon-button" id="top-settings" aria-label="Open settings">⚙</button></div>
+          <div class="topbar-actions"><button class="icon-button menu-button" id="open-sidebar" aria-label="Open workspace menu"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M10 4.5v15" stroke="currentColor" stroke-width="1.8"/></svg></button><button class="icon-button" id="top-settings" aria-label="Open settings">⚙</button></div>
         </header>
 
         <section class="workspace" id="workspace">
           <div class="welcome" id="welcome-state">
-            <div class="welcome-heading"><span class="spark">✧</span><h1>What are we building today?</h1><span class="demo-pill" id="demo-pill" hidden>Demo mode</span></div>
+            <div class="welcome-heading"><span class="spark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 3.5c1.15 7.1 4.25 10.2 11.35 11.35C22.25 16 19.15 19.1 18 26.2 16.85 19.1 13.75 16 6.65 14.85 13.75 13.7 16.85 10.6 18 3.5Z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M29 25c.55 3.4 2.05 4.9 5.5 5.5-3.45.55-4.95 2.05-5.5 5.5-.55-3.45-2.05-4.95-5.5-5.5 3.45-.6 4.95-2.1 5.5-5.5Z" fill="currentColor"/></svg></span><h1>What are we building today?</h1><span class="demo-pill" id="demo-pill" hidden>Demo mode</span></div>
             <p>Your ideas. Your models. Your AI workspace.</p>
             <div class="prompt-grid">
               <button class="prompt-card" data-prompt="Help me build this idea into a practical, maintainable plan."><span class="prompt-icon">↗</span><span class="prompt-copy"><strong>Build something</strong><small>Turn an idea into a clear next step.</small></span></button>
@@ -66,11 +66,11 @@
             <form class="composer" id="composer">
               <textarea id="prompt-input" rows="1" placeholder="Ask anything, write a prompt, or build something amazing..." aria-label="Message Orefyspace AI"></textarea>
               <div class="composer-toolbar">
-                <div class="composer-left"><button type="button" class="composer-control" id="attach-button"><span>📎</span> Attach</button><input id="file-input" type="file" hidden multiple /><button type="button" class="composer-control" id="model-button"><span>☷</span><span id="selected-model-label">Loading models</span><span class="chevron">⌄</span></button></div>
-                <div class="composer-right"><span class="shortcut-hint">Enter to send · Shift + Enter for new line</span><button class="send-button" id="send-button" type="submit" aria-label="Send message">↑</button></div>
+                <div class="composer-left"><button type="button" class="composer-control" id="attach-button" aria-label="Attach files" title="Attach files"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8.5 12.5v-5a3.5 3.5 0 0 1 7 0v8a5.5 5.5 0 0 1-11 0V7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8.5 12.5v3a1.5 1.5 0 0 0 3 0v-8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><input id="file-input" type="file" hidden multiple /><button type="button" class="composer-control model-control" id="model-button" aria-label="Choose AI model" title="Choose AI model"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="15" cy="6" r="2" fill="currentColor"/><circle cx="9" cy="12" r="2" fill="currentColor"/><circle cx="15" cy="18" r="2" fill="currentColor"/></svg><span id="selected-model-label">Loading models</span><span class="chevron">⌄</span></button></div>
+                <div class="composer-right"><span class="shortcut-hint">Enter to send · Shift + Enter for new line</span><button class="send-button" id="send-button" type="submit" aria-label="Send message"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
               </div>
             </form>
-            <div class="composer-note"><span aria-hidden="true">◉</span> Your workspace. Your control.</div>
+            <div class="composer-note"><span aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3 20 6v5.4c0 4.8-3.4 7.9-8 9.6-4.6-1.7-8-4.8-8-9.6V6l8-3Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m8.5 11.9 2.2 2.2 4.8-4.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span> Your workspace. Your control.</div>
           </div>
         </section>
       </main>
