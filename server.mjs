@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +8,7 @@ import { createProviderRegistry, ProviderError } from './providers.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(root, 'public');
-const dataDir = join(root, 'data');
+const dataDir = process.env.DATA_DIR || join(root, 'data');
 const conversationsFile = join(dataDir, 'conversations.json');
 const projectsFile = join(dataDir, 'projects.json');
 const promptsFile = join(dataDir, 'prompts.json');
@@ -17,7 +18,7 @@ const envFile = join(root, '.env');
 if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+    if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
   }
 }
 
@@ -25,6 +26,12 @@ const port = Number(process.env.PORT || 3000);
 const defaultModel = process.env.OPENROUTER_MODEL || 'openrouter/free';
 const defaultModelKey = defaultModel.includes(':') ? defaultModel : `openrouter:${defaultModel}`;
 const databaseUrl = process.env.DATABASE_URL || '';
+const supabaseUrl = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const supabasePublicKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '';
+const authEnabled = Boolean(supabaseUrl && supabasePublicKey);
+const authRequired = process.env.AUTH_REQUIRED === 'true';
+const workspaceContext = new AsyncLocalStorage();
+const workspaceLoads = new Map();
 const clamp = (value, min, max, fallback) => Number.isFinite(value) ? Math.min(Math.max(value, min), max) : fallback;
 const requestTimeoutMs = clamp(Number(process.env.OPENROUTER_TIMEOUT_MS || 45_000), 5_000, 120_000, 45_000);
 const maxBodyBytes = clamp(Number(process.env.MAX_REQUEST_BYTES || 1_000_000), 10_000, 5_000_000, 1_000_000);
@@ -36,44 +43,57 @@ const allowedRoles = new Set(['system', 'user', 'assistant']);
 const chatRateWindowMs = clamp(Number(process.env.CHAT_RATE_WINDOW_MS || 600_000), 60_000, 3_600_000, 600_000);
 const chatRateLimit = clamp(Number(process.env.CHAT_RATE_LIMIT || 30), 1, 300, 30);
 const rateBuckets = new Map();
-const persistence = { mode: 'filesystem', pool: null, state: { conversations: [], projects: [], prompts: [] } };
+const persistence = { mode: 'filesystem', pool: null, state: { userId: 'default', conversations: [], projects: [], prompts: [] } };
 const providerRegistry = createProviderRegistry({ env: process.env, timeoutMs: requestTimeoutMs, maxOutputTokens });
+const promptSeedTemplates = [
+  { title: 'Code review brief', category: 'Coding', content: 'Review this code for correctness, maintainability, security, and test gaps. Return findings by severity with concrete fixes.' },
+  { title: 'Research synthesis', category: 'Research', content: 'Synthesize the provided research into key findings, disagreements, open questions, and a practical recommendation. Cite uncertainty clearly.' },
+  { title: 'Polished rewrite', category: 'Writing', content: 'Rewrite the text below so it is clear, concise, warm, and persuasive. Preserve the meaning and flag any unsupported claims.' },
+  { title: 'Workflow designer', category: 'Automation', content: 'Design an automation workflow for this goal. Include trigger, steps, data passed between steps, failure handling, and a simple implementation plan.' }
+];
+function createSeededPrompts() {
+  const now = new Date().toISOString();
+  return promptSeedTemplates.map(prompt => ({ id: randomUUID(), ...prompt, createdAt: now, updatedAt: now }));
+}
 
 mkdirSync(dataDir, { recursive: true });
 if (!existsSync(conversationsFile)) writeFileSync(conversationsFile, '[]', 'utf8');
 if (!existsSync(projectsFile)) writeFileSync(projectsFile, '[]', 'utf8');
-if (!existsSync(promptsFile)) writeFileSync(promptsFile, JSON.stringify([
-  { id: randomUUID(), title: 'Code review brief', category: 'Coding', content: 'Review this code for correctness, maintainability, security, and test gaps. Return findings by severity with concrete fixes.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: randomUUID(), title: 'Research synthesis', category: 'Research', content: 'Synthesize the provided research into key findings, disagreements, open questions, and a practical recommendation. Cite uncertainty clearly.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: randomUUID(), title: 'Polished rewrite', category: 'Writing', content: 'Rewrite the text below so it is clear, concise, warm, and persuasive. Preserve the meaning and flag any unsupported claims.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: randomUUID(), title: 'Workflow designer', category: 'Automation', content: 'Design an automation workflow for this goal. Include trigger, steps, data passed between steps, failure handling, and a simple implementation plan.', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-], null, 2), 'utf8');
+if (!existsSync(promptsFile)) writeFileSync(promptsFile, JSON.stringify(createSeededPrompts(), null, 2), 'utf8');
 
 const json = (value, status = 200) => ({ status, body: JSON.stringify(value), headers: { 'content-type': 'application/json; charset=utf-8' } });
 
+function currentWorkspace() {
+  return workspaceContext.getStore() || persistence.state;
+}
+
 function readConversations() {
-  return persistence.state.conversations;
+  return currentWorkspace().conversations;
 }
 
 async function saveConversations(conversations) {
-  persistence.state.conversations = conversations;
-  await persistWorkspace();
+  const workspace = currentWorkspace();
+  workspace.conversations = conversations;
+  await persistWorkspace(workspace);
 }
 
 function readJsonFile(file, fallback = []) {
-  if (file === projectsFile) return persistence.state.projects;
-  if (file === promptsFile) return persistence.state.prompts;
+  const workspace = currentWorkspace();
+  if (file === projectsFile) return workspace.projects;
+  if (file === promptsFile) return workspace.prompts;
   try { const value = JSON.parse(readFileSync(file, 'utf8')); return Array.isArray(value) ? value : fallback; } catch { return fallback; }
 }
 
 async function saveJsonFile(file, value) {
-  if (file === projectsFile) persistence.state.projects = value;
-  if (file === promptsFile) persistence.state.prompts = value;
-  await persistWorkspace();
+  const workspace = currentWorkspace();
+  if (file === projectsFile) workspace.projects = value;
+  if (file === promptsFile) workspace.prompts = value;
+  await persistWorkspace(workspace);
 }
 
 async function initializePersistence() {
   persistence.state = {
+    userId: 'default',
     conversations: readFileArray(conversationsFile),
     projects: readFileArray(projectsFile),
     prompts: readFileArray(promptsFile)
@@ -83,9 +103,10 @@ async function initializePersistence() {
     const { Pool } = await import('pg');
     persistence.pool = new Pool({ connectionString: databaseUrl, ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false }, max: 5 });
     await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_workspace_state (id TEXT PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_user_workspaces (user_id TEXT PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
     const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
     if (result.rows[0]) {
-      persistence.state = { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
+      persistence.state = { userId: 'default', conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
     } else {
       await persistWorkspace();
     }
@@ -102,14 +123,48 @@ function readFileArray(file) {
   try { const value = JSON.parse(readFileSync(file, 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; }
 }
 
-async function persistWorkspace() {
-  if (persistence.pool) {
-    await persistence.pool.query(`INSERT INTO orefyspace_workspace_state (id, conversations, projects, prompts, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET conversations = EXCLUDED.conversations, projects = EXCLUDED.projects, prompts = EXCLUDED.prompts, updated_at = NOW()`, ['default', JSON.stringify(persistence.state.conversations), JSON.stringify(persistence.state.projects), JSON.stringify(persistence.state.prompts)]);
+async function loadUserWorkspace(userId) {
+  if (workspaceLoads.has(userId)) return workspaceLoads.get(userId);
+  const loading = (async () => {
+    if (persistence.pool) {
+      const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_user_workspaces WHERE user_id = $1', [userId]);
+      if (result.rows[0]) return { userId, conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
+    } else {
+      const usersDir = join(dataDir, 'users');
+      const file = join(usersDir, `${createHash('sha256').update(userId).digest('hex')}.json`);
+      try {
+        const stored = JSON.parse(readFileSync(file, 'utf8'));
+        if (stored.userId === userId) return { userId, conversations: stored.conversations || [], projects: stored.projects || [], prompts: stored.prompts || [] };
+      } catch { /* create a new isolated workspace below */ }
+    }
+    const workspace = { userId, conversations: [], projects: [], prompts: createSeededPrompts() };
+    await persistWorkspace(workspace);
+    return workspace;
+  })();
+  workspaceLoads.set(userId, loading);
+  try { return await loading; }
+  finally { if (workspaceLoads.get(userId) === loading) workspaceLoads.delete(userId); }
+}
+
+async function persistWorkspace(workspace = currentWorkspace()) {
+  if (workspace.userId && workspace.userId !== 'default') {
+    if (persistence.pool) {
+      await persistence.pool.query(`INSERT INTO orefyspace_user_workspaces (user_id, conversations, projects, prompts, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW()) ON CONFLICT (user_id) DO UPDATE SET conversations = EXCLUDED.conversations, projects = EXCLUDED.projects, prompts = EXCLUDED.prompts, updated_at = NOW()`, [workspace.userId, JSON.stringify(workspace.conversations), JSON.stringify(workspace.projects), JSON.stringify(workspace.prompts)]);
+      return;
+    }
+    const usersDir = join(dataDir, 'users');
+    mkdirSync(usersDir, { recursive: true });
+    const file = join(usersDir, `${createHash('sha256').update(workspace.userId).digest('hex')}.json`);
+    writeFileSync(file, JSON.stringify(workspace, null, 2), 'utf8');
     return;
   }
-  writeFileSync(conversationsFile, JSON.stringify(persistence.state.conversations, null, 2), 'utf8');
-  writeFileSync(projectsFile, JSON.stringify(persistence.state.projects, null, 2), 'utf8');
-  writeFileSync(promptsFile, JSON.stringify(persistence.state.prompts, null, 2), 'utf8');
+  if (persistence.pool) {
+    await persistence.pool.query(`INSERT INTO orefyspace_workspace_state (id, conversations, projects, prompts, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET conversations = EXCLUDED.conversations, projects = EXCLUDED.projects, prompts = EXCLUDED.prompts, updated_at = NOW()`, ['default', JSON.stringify(workspace.conversations), JSON.stringify(workspace.projects), JSON.stringify(workspace.prompts)]);
+    return;
+  }
+  writeFileSync(conversationsFile, JSON.stringify(workspace.conversations, null, 2), 'utf8');
+  writeFileSync(projectsFile, JSON.stringify(workspace.projects, null, 2), 'utf8');
+  writeFileSync(promptsFile, JSON.stringify(workspace.prompts, null, 2), 'utf8');
 }
 
 async function persistenceHealth() {
@@ -314,7 +369,40 @@ async function tryProviderWithFallback(request, model, messages) {
   }
 }
 
+async function verifySupabaseUser(request) {
+  const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) { const error = new Error('Sign in to continue.'); error.status = 401; error.code = 'auth_required'; throw error; }
+  let result;
+  try {
+    result = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: supabasePublicKey, authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000)
+    });
+  } catch {
+    const error = new Error('The sign-in service is temporarily unavailable. Please try again.'); error.status = 503; error.code = 'auth_service_unavailable'; throw error;
+  }
+  if (!result.ok) { const error = new Error('Your sign-in session is invalid or expired.'); error.status = 401; error.code = 'invalid_session'; throw error; }
+  const user = await result.json().catch(() => null);
+  if (!user || typeof user.id !== 'string' || !user.id) { const error = new Error('The sign-in service returned an invalid account.'); error.status = 401; error.code = 'invalid_session'; throw error; }
+  return { id: user.id, email: typeof user.email === 'string' ? user.email : '' };
+}
+
 async function handleApi(request, response, pathname) {
+  if (request.method === 'GET' && pathname === '/api/auth/config') {
+    return send(response, json({ enabled: authEnabled, required: authRequired, supabaseUrl: authEnabled ? supabaseUrl : '', publicKey: authEnabled ? supabasePublicKey : '' }));
+  }
+  if (request.method === 'GET' && pathname === '/api/health') return handleWorkspaceApi(request, response, pathname);
+  if (authRequired && !authEnabled) return sendError(response, 503, 'Authentication is required but Supabase is not configured on the server.', 'auth_not_configured');
+  try {
+    const user = authEnabled ? await verifySupabaseUser(request) : null;
+    const workspace = user ? await loadUserWorkspace(user.id) : persistence.state;
+    return await workspaceContext.run(workspace, () => handleWorkspaceApi(request, response, pathname));
+  } catch (error) {
+    return sendError(response, error.status || 503, error.message || 'Authentication could not be verified.', error.code || 'auth_service_unavailable');
+  }
+}
+
+async function handleWorkspaceApi(request, response, pathname) {
   try {
     if (request.method === 'GET' && pathname === '/api/health') return send(response, json({ ok: true, demo: !Object.values(providerRegistry.providers).some(provider => provider.key), defaultModel: defaultModelKey, providers: Object.entries(providerRegistry.providers).map(([id, provider]) => ({ id, name: provider.name, configured: Boolean(provider.key) })), ...(await persistenceHealth()) }));
     if (request.method === 'GET' && pathname === '/api/models') return send(response, json(await listProviderModels()));

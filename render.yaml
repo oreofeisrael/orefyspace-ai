@@ -33,6 +33,12 @@ services:
         sync: false
       - key: DATABASE_SSL
         value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: AUTH_REQUIRED
+        value: "true"
       - key: OPENROUTER_TIMEOUT_MS
         value: "45000"
       - key: OPENROUTER_MAX_OUTPUT_TOKENS

@@ -8,8 +8,8 @@ The generated application is a single Node.js service, not a static-only fronten
 - `server.mjs` serves the UI and owns all `/api/*` routes.
 - The server calls OpenRouter server-side, so the browser never receives `OPENROUTER_API_KEY`.
 - Chat responses are streamed as SSE/chunked HTTP from `POST /api/chat`.
-- The current persistence adapter uses local JSON files when `DATABASE_URL` is empty.
-- When `DATABASE_URL` is set, the server uses PostgreSQL and creates an `orefyspace_workspace_state` table automatically.
+- Supabase Auth supports email/password and Google, Apple, and Microsoft sign-in; workspace APIs validate access tokens server-side.
+- Without `DATABASE_URL`, local JSON files are used. When it is set, the server creates the legacy `orefyspace_workspace_state` table and an `orefyspace_user_workspaces` table for isolated signed-in accounts.
 - `/api/health` reports the active persistence mode and whether the database is reachable.
 
 Because this is a full-stack Node server, deploying the frontend as a static site alone would break chat, model discovery, projects, prompts, persistence, and export. The recommended zero-cost starting architecture is therefore:
@@ -23,7 +23,9 @@ Render Free Web Service
   ├─ owns OPENROUTER_API_KEY
   └─ streams /api/chat
       ↓
-Supabase Free PostgreSQL project
+Supabase project
+  ├─ Auth (password + Google, Apple, Microsoft)
+  └─ PostgreSQL (per-user workspaces)
 ```
 
 This is a development/hobby deployment, not a security or availability guarantee.
@@ -66,6 +68,9 @@ Set these under **Render service → Environment → Environment Variables**:
 | `OPENROUTER_APP_NAME` | `Orefyspace AI` |
 | `DATABASE_URL` | Supabase PostgreSQL connection string, described below |
 | `DATABASE_SSL` | `true` |
+| `SUPABASE_URL` | Supabase project URL, e.g. `https://<project-ref>.supabase.co` |
+| `SUPABASE_ANON_KEY` | Public anon/publishable key (not the `service_role` key) |
+| `AUTH_REQUIRED` | `true` — the included Render blueprint fails closed unless Supabase Auth is configured |
 | `OPENROUTER_TIMEOUT_MS` | `45000` |
 | `OPENROUTER_MAX_OUTPUT_TOKENS` | `4096` |
 | `CHAT_RATE_LIMIT` | `30` |
@@ -86,7 +91,7 @@ The `render.yaml` uses `sync: false` for secrets so values are requested in the 
 
 Create a Supabase project on the Free plan, then open **Supabase Dashboard → Connect → Session pooler**. Copy the PostgreSQL connection string and set it as `DATABASE_URL` in Render. The shared/session pooler is the safer choice for an IPv4-only hosted service; do not put the database password in the repository.
 
-The server automatically creates one JSONB-backed table:
+The server automatically creates JSONB-backed tables:
 
 ```text
 orefyspace_workspace_state
@@ -95,11 +100,26 @@ orefyspace_workspace_state
   projects JSONB
   prompts JSONB
   updated_at
+
+orefyspace_user_workspaces
+  user_id (Supabase Auth user ID)
+  conversations JSONB
+  projects JSONB
+  prompts JSONB
+  updated_at
 ```
 
 ### Supabase Free plan limits to plan around
 
-Supabase documents a Free plan with two free projects, 500 MB database size per project, 5 GB egress, 1 GB file storage, and project pausing after one week of inactivity. The current app only uses PostgreSQL; it does not require Supabase Auth, Storage, or its browser Data API.
+Supabase documents a Free plan with two free projects, 500 MB database size per project, 5 GB egress, 1 GB file storage, and project pausing after one week of inactivity. This app uses Supabase Auth plus PostgreSQL; it does not require Supabase Storage or the browser Data API.
+
+### Configure Supabase Auth
+
+In **Authentication → URL Configuration**, set the Site URL to the deployed app's origin and add that origin plus `http://localhost:3000` to the redirect allow list for local development. In **Authentication → Providers**, enable email/password and configure [Google](https://supabase.com/docs/guides/auth/social-login/auth-google), [Apple](https://supabase.com/docs/guides/auth/social-login/auth-apple), and [Azure (Microsoft)](https://supabase.com/docs/guides/auth/social-login/auth-azure). For each social provider, create the OAuth app with its respective provider, use the callback URL shown in the Supabase provider settings (usually `https://<project-ref>.supabase.co/auth/v1/callback`), then enter the client ID and secret in Supabase. The app requests the Microsoft `email` scope. Provider credentials remain in Supabase and are never placed in this repository.
+
+Copy the Supabase project URL and the public anon/publishable key into `SUPABASE_URL` and `SUPABASE_ANON_KEY` on Render. Never use a `service_role` key. Keep `AUTH_REQUIRED=true`; until both settings are present, authenticated API routes return a configuration error instead of allowing public workspace access. Choose the email-confirmation behavior in Supabase. Apple web OAuth requires recurring signing-key rotation every six months.
+
+Each signed-in account gets its own workspace row. Existing data in the old `orefyspace_workspace_state` row is not copied into a new account automatically; an explicit owner-approved migration is needed if that legacy data should be moved.
 
 The application reports:
 
@@ -120,11 +140,11 @@ If the database cannot initialize, the server logs the failure and falls back to
 2. In Render, choose **New → Web Service** and connect the repository.
 3. Use the exact settings above, or create a Render Blueprint from the included `render.yaml`.
 4. Create the Supabase Free project and copy the **session pooler** connection string from **Connect**.
-5. Add `OPENROUTER_API_KEY`, `DATABASE_URL`, and the remaining environment variables in Render.
+5. Configure Supabase Auth providers and add `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `AUTH_REQUIRED=true`, `DATABASE_URL`, `OPENROUTER_API_KEY`, and the remaining environment variables in Render.
 6. Deploy.
 7. Open `https://YOUR-SERVICE.onrender.com/api/health`.
 8. Confirm `ok: true` and `persistent: true` with `mode: postgres`.
-9. Open the root URL and test model loading, a chat request, project creation, prompt insertion, and conversation export.
+9. Open the root URL and test email signup/login, each enabled social provider, model loading, a chat request, project creation, prompt insertion, and conversation export.
 
 Do not describe the application as deployed until step 8 and the user-flow test in step 9 have actually succeeded.
 
@@ -207,7 +227,8 @@ Cloudflare can host the static frontend on Pages and the backend as a Worker. Wo
 
 - Live model responses require an OpenRouter API key. Hosting can be free while inference is still paid or rate-limited.
 - A durable database requires `DATABASE_URL`. Without it, local JSON files are ephemeral on Render.
-- Authentication is not implemented. Do not expose this as a multi-user private workspace until authentication and authorization are added.
+- Google, Apple, and Microsoft OAuth each require provider apps and credentials configured in Supabase. Until configured, those provider buttons cannot complete sign-in.
+- Per-user workspace records are isolated by Supabase Auth user ID. Durable multi-user persistence still requires `DATABASE_URL`; local files are ephemeral on Render.
 - Durable distributed rate limiting is not implemented. The current limiter is process-local and resets on restart.
 - Backups, audit logs, billing controls, and team permissions are not implemented.
 - Custom domains may be available on a free host, but domain registration itself is generally not free.
