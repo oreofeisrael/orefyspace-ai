@@ -88,9 +88,9 @@ async function persistConversation(conversation) {
   try { await api('/api/conversations', { method: 'POST', body: JSON.stringify(conversation) }); } catch (error) { showError(`Saved locally for now. ${error.message}`); }
 }
 
-function createConversation() {
+function createConversation(focusInput = true) {
   const conversation = { id: uid(), title: 'New conversation', model: state.selectedModel || state.defaultModel || '', projectId: state.projectFilter || null, archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] };
-  state.conversations.unshift(conversation); state.currentId = conversation.id; renderConversations(); renderConversation(); els.input.focus(); showError(''); return conversation;
+  state.conversations.unshift(conversation); state.currentId = conversation.id; renderConversations(); renderConversation(); if (focusInput) els.input.focus(); showError(''); return conversation;
 }
 
 async function loadConversation(id) { state.currentId = id; const conversation = currentConversation(); if (conversation?.model) { state.selectedModel = conversation.model.includes(':') ? conversation.model : `openrouter:${conversation.model}`; localStorage.setItem('orefyspace.model', state.selectedModel); renderModels(); } renderConversations(); renderConversation(); closeSidebarOnMobile(); }
@@ -178,7 +178,7 @@ async function loadConversations() {
   try { state.conversations = await api('/api/conversations'); } catch { state.conversations = []; }
   if (!state.currentId && state.conversations[0]) state.currentId = state.conversations[0].id;
   const active = currentConversation(); if (active?.model) state.selectedModel = active.model.includes(':') ? active.model : `openrouter:${active.model}`;
-  if (!state.currentId) createConversation(); else { renderConversations(); renderConversation(); }
+  if (!state.currentId) createConversation(false); else { renderConversations(); renderConversation(); }
 }
 
 function appendMessage(role, content, pending = false) {
@@ -204,7 +204,7 @@ async function sendMessage(text = els.input.value.trim()) {
     if (editIndex >= 0) activeConversation.messages.splice(editIndex);
     state.editingMessageId = null;
   }
-  appendMessage('user', text); const assistant = appendMessage('assistant', '', true); state.generating = true; els.send.textContent = '■'; els.send.setAttribute('aria-label', 'Stop generation');
+  appendMessage('user', text); const assistant = appendMessage('assistant', '', true); state.generating = true; els.send.innerHTML = '<span aria-hidden="true">■</span>'; els.send.setAttribute('aria-label', 'Stop generation');
   state.abortController = new AbortController();
   const conversation = currentConversation();
   const densityInstruction = state.responseDensity === 'concise'
@@ -229,7 +229,7 @@ async function sendMessage(text = els.input.value.trim()) {
     assistant.pending = false; if (!assistant.content) assistant.content = 'The model returned an empty response.';
   } catch (error) {
     assistant.pending = false; assistant.content = error.name === 'AbortError' ? 'Generation stopped.' : (assistant.content || `The request failed: ${error.message}`); state.lastFailedAssistantId = error.name === 'AbortError' ? null : assistant.id; showError(error.name === 'AbortError' ? '' : error.message, error.name !== 'AbortError');
-  } finally { state.generating = false; state.abortController = null; els.send.textContent = '↑'; els.send.setAttribute('aria-label', 'Send message'); renderConversation(); await saveCurrent(); }
+  } finally { state.generating = false; state.abortController = null; els.send.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'; els.send.setAttribute('aria-label', 'Send message'); renderConversation(); await saveCurrent(); }
 }
 
 function retryLastPrompt() {
