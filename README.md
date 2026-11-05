@@ -1,10 +1,10 @@
 # Orefyspace AI
 
-Orefyspace AI is a production-oriented, dark-first personal AI workspace powered by a configurable multi-provider gateway. It includes persistent conversations, projects, a reusable prompt library, live model discovery, per-conversation model selection, provider-aware streaming chat responses, export, archive, search, and explicit provider/quota errors.
+Orefyspace AI is a personal AI workspace with a clean ChatGPT-inspired interface, account sign-in, and a configurable multi-provider gateway. It includes persistent conversations, projects, a reusable prompt library, live model discovery, per-conversation model selection, provider-aware streaming chat responses, export, archive, search, and explicit provider/quota errors.
 
 ## Current implementation
 
-This workspace did not contain an existing web app or a Node/npm runtime, so the implementation uses a dependency-free browser frontend served by a small Node server. That keeps the application runnable without a build step while preserving the requested layout and server-side API-key boundary. The server is ready to sit behind a reverse proxy or be moved into a framework route handler later.
+The app uses a small Node server and a dependency-free browser frontend, so it runs without a build step. Supabase Auth handles email/password and Google, Apple, and Microsoft sign-in; the server verifies access tokens and keeps each account's conversations, projects, and prompts separate. The server remains the boundary for model-provider API keys.
 
 The official uploaded logo was not available as a workspace file at build time. The UI references `/orefyspace-logo.png` directly and falls back to an accessible text wordmark only until that official asset is placed in `public/`.
 
@@ -13,9 +13,10 @@ The official uploaded logo was not available as a workspace file at build time. 
 1. Install Node.js 18 or newer.
 2. Copy `.env.example` to `.env`.
 3. Set `OPENROUTER_API_KEY` in `.env` to enable live model responses.
-4. Optionally set `OPENROUTER_MODEL` to your preferred default model.
-5. Put the official Orefyspace logo at `public/orefyspace-logo.png`.
-6. Start the app:
+4. For account sign-in, set `SUPABASE_URL` and `SUPABASE_ANON_KEY` as described below; leave them empty to run the existing single-user local mode.
+5. Optionally set `OPENROUTER_MODEL` to your preferred default model.
+6. Put the official Orefyspace logo at `public/orefyspace-logo.png`.
+7. Start the app:
 
 ```bash
 npm start
@@ -45,6 +46,9 @@ npm run dev
 | `PROVIDER_FALLBACK_CHAIN` | No | Comma-separated provider/model keys used only when the requested provider fails, for example `groq:openai/gpt-oss-20b,openrouter:openrouter/free`. Fallback is explicit in the streamed metadata. |
 | `DATABASE_URL` | No locally; recommended in deployment | PostgreSQL connection string. When present, the server uses durable PostgreSQL state instead of ephemeral local files. |
 | `DATABASE_SSL` | No | Set to `true` for hosted PostgreSQL connections. |
+| `SUPABASE_URL` | Required for auth | Supabase project URL, for example `https://<project-ref>.supabase.co`. |
+| `SUPABASE_ANON_KEY` | Required for auth | Supabase public anon/publishable key. Never use the `service_role` key in the browser or here. |
+| `AUTH_REQUIRED` | No; set `true` in production | Fail closed if Supabase Auth is not configured. When Supabase URL and key are present, API routes require a valid signed-in user. |
 | `OPENROUTER_TIMEOUT_MS` | No | Upstream timeout in milliseconds, defaults to `45000`. |
 | `OPENROUTER_MAX_OUTPUT_TOKENS` | No | Server-side output cap, defaults to `4096`. |
 | `MAX_REQUEST_BYTES` | No | JSON request body limit, defaults to `1000000`. |
@@ -55,17 +59,27 @@ npm run dev
 | `CHAT_RATE_LIMIT` | No | Maximum chat requests per client per window, defaults to `30`. |
 | `PORT` | No | Local HTTP port, defaults to `3000`. |
 
+## Account sign-in setup
+
+Create a Supabase project, then set `SUPABASE_URL` and its public anon/publishable key as `SUPABASE_ANON_KEY`. Set `AUTH_REQUIRED=true` on production deployments. The app supports email/password and uses Supabase Auth for Google, Apple, and Microsoft; the server checks every authenticated API request against Supabase and stores workspace data per user. Do not add a Supabase `service_role` key to this app.
+
+In Supabase, set the project **Site URL** and allowed redirect URLs to the deployed app origin and your local development origin (for example `http://localhost:3000`). Enable email/password sign-up and choose whether new accounts need email confirmation. Then enable [Google](https://supabase.com/docs/guides/auth/social-login/auth-google), [Apple](https://supabase.com/docs/guides/auth/social-login/auth-apple), and [Azure (Microsoft)](https://supabase.com/docs/guides/auth/social-login/auth-azure) under Authentication → Providers and enter each provider's client credentials in Supabase. The identity-provider callback URL is the Supabase Auth callback shown in the provider settings, typically `https://<project-ref>.supabase.co/auth/v1/callback`; the app returns to its own allowed Site URL after authentication. Microsoft sign-in requests the `email` scope.
+
+Google, Apple, and Microsoft sign-in will not complete until the corresponding provider apps and credentials are configured in Supabase. Apple web sign-in requires an Apple Developer account and its signing key must be rotated every six months. When auth is enabled, new accounts start with a separate workspace; the old shared local/default workspace is deliberately not assigned to the first account, to avoid exposing existing data to whichever user signs up first.
+
 ## Production deployment
 
 - Run behind HTTPS and a reverse proxy such as Nginx, Caddy, or a platform-managed edge proxy.
 - Set environment variables in the host's secret manager, not in the repository.
 - Use `DATABASE_URL` with PostgreSQL/Supabase for deployment persistence. Local JSON storage is only a fallback for local development and ephemeral environments.
-- Add authentication and rate limiting before exposing the server publicly. The current app is intentionally a single-workspace local deployment.
-- Keep `OPENROUTER_API_KEY` server-side. The browser only calls `/api/models`, `/api/conversations`, and `/api/chat`.
+- Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `AUTH_REQUIRED=true` before exposing the server publicly. Keep the auth provider secrets in Supabase, not in this repository.
+- Use `DATABASE_URL` for durable per-user workspace storage; local per-user JSON files are suitable only for development and are ephemeral on many hosts.
+- Keep `OPENROUTER_API_KEY` server-side. Workspace API routes require a Supabase access token when auth is enabled; browser sign-in requests go directly to Supabase Auth.
 
 ## API surface
 
 - `GET /api/health` — reports live/demo mode and default model.
+- `GET /api/auth/config` — returns whether auth is enabled and the public Supabase project URL/key needed by the browser.
 - `GET /api/models` — retrieves provider catalogues server-side and returns normalized models with provider, capabilities, pricing/free-status notes, and configuration state. OpenRouter, Groq, and Gemini are queried dynamically; Workers AI is configurable through `CLOUDFLARE_WORKERS_AI_MODELS` because its model list is account/catalogue dependent.
 - `GET /api/conversations` — loads active saved conversations. Supports `?archived=true` and `?projectId=...`.
 - `POST /api/conversations` — creates or upserts a conversation.
@@ -81,6 +95,8 @@ npm run dev
 - `PATCH /api/prompts/:id` — edits a saved prompt.
 - `DELETE /api/prompts/:id` — deletes a saved prompt.
 - `POST /api/chat` — validates `{ model, messages }`, routes by provider key such as `openrouter:...`, `groq:...`, `gemini:...`, or `cloudflare:...`, adds the server-side output limit, and returns a normalized SSE stream.
+
+All workspace routes except `/api/health` and `/api/auth/config` require a valid Supabase access token whenever `SUPABASE_URL` and `SUPABASE_ANON_KEY` are configured.
 
 ### Chat request shape
 
@@ -121,13 +137,13 @@ When no provider key is configured, the app visibly labels itself **Demo mode**,
 
 Known limitations for this first production-oriented slice:
 
-- Conversation, project, and prompt persistence use local JSON files (`data/conversations.json`, `data/projects.json`, and `data/prompts.json`) and are not multi-user safe.
-- Authentication, billing, per-user quotas, and audit logging are not included. The chat limiter is in-memory and resets when the server restarts; it is not a substitute for a distributed rate limiter.
+- Without Supabase Auth configuration, the app remains in its legacy single-workspace local mode. With auth enabled, accounts are isolated, but local per-user JSON storage is not durable across ephemeral hosting restarts.
+- Billing, per-user quotas, audit logging, and distributed rate limiting are not included. The chat limiter is in-memory and resets when the server restarts; it is not a substitute for a distributed rate limiter.
 - Attachments currently add the selected filenames to the composer; file extraction and multimodal payloads still need a storage and security policy.
 - Rename/delete uses a small prompt interaction rather than a full context menu.
-- The JSON conversation store is suitable for a local single-user deployment only; use a database plus authentication before multi-user production use.
-- The UI is intentionally dependency-free in this environment rather than a React/Tailwind build because the workspace has no existing frontend and no Node/npm runtime available to install or run a toolchain. The app's CSS tokens map directly to the requested palette and can be migrated into React/Tailwind components without changing the API contract.
+- The JSON conversation store is suitable for local development only; use PostgreSQL (`DATABASE_URL`) for durable multi-user production use.
+- Authentication is provided by Supabase Auth. Social sign-in depends on configuring each provider in the Supabase dashboard and registering the Supabase callback URL with that provider.
 
-For a real multi-user deployment, add authentication, a database-backed repository for conversations/projects/prompts, durable rate limiting, CSRF/origin protections appropriate to the deployment, and a secret manager. This implementation makes no claims of privacy, encryption, or account security beyond the server-side API-key boundary and the input limits described above.
+For production, configure each enabled identity provider in Supabase, set `AUTH_REQUIRED=true`, and use PostgreSQL for durable account workspaces. Durable rate limiting, audit logging, and backup policies remain deployment responsibilities.
 
 See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the inspected architecture, recommended Render + Supabase zero-cost starting deployment, exact environment variable names, health-check verification, logs, hosting limits, OpenRouter cost caveats, and alternative hosting paths.

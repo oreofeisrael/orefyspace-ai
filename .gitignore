@@ -5,4 +5,5 @@ node_modules/
 data/conversations.json
 data/projects.json
 data/prompts.json
+data/users/
 public/orefyspace-logo.png

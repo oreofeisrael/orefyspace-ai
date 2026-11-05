@@ -4,7 +4,7 @@ const state = {
   models: [],
   selectedModel: localStorage.getItem('orefyspace.model') || '',
   responseDensity: localStorage.getItem('orefyspace.density') || 'balanced',
-  theme: localStorage.getItem('orefyspace.theme') || 'dark',
+  theme: localStorage.getItem('orefyspace.theme') || 'light',
   defaultModel: '',
   generating: false,
   abortController: null,
@@ -25,7 +25,11 @@ const els = {
   topbarTitle: $('#topbar-title'), search: $('#conversation-search'), defaultSetting: $('#default-model-setting'), density: $('#response-density'), theme: $('#theme-setting'),
   modelSearch: $('#model-search'), modelCapability: $('#model-capability'), projectList: $('#project-list'), promptList: $('#prompt-list'), promptSearch: $('#prompt-search'), promptCategoryFilter: $('#prompt-category-filter'),
   modelProvider: $('#model-provider'),
+  profileName: $('#profile-name'), profileEmail: $('#profile-email'), profileAvatar: $('#profile-avatar'), signOut: $('#sign-out-button'),
 };
+
+const authState = { enabled: false, required: false, supabaseUrl: '', publicKey: '', session: null, user: null, mode: 'signin' };
+let workspaceStarted = false;
 
 function uid() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function escapeHtml(text = '') { return text.replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char])); }
@@ -56,8 +60,241 @@ function showError(message, canRetry = false) {
   els.error.hidden = !message;
 }
 
+function clearAuthSession() {
+  sessionStorage.removeItem('orefyspace.auth.session');
+  authState.session = null;
+  authState.user = null;
+}
+
+function storeAuthSession(value) {
+  if (!value?.access_token || !value?.refresh_token) throw new Error('The sign-in service did not return a complete session.');
+  const expiresAt = value.expires_at ? Number(value.expires_at) * 1000 : Date.now() + Number(value.expires_in || 3600) * 1000;
+  authState.session = { access_token: value.access_token, refresh_token: value.refresh_token, expires_at: expiresAt };
+  authState.user = value.user || authState.user;
+  sessionStorage.setItem('orefyspace.auth.session', JSON.stringify(authState.session));
+}
+
+async function authRequest(endpoint, { method = 'POST', body: payload, token } = {}) {
+  const headers = { apikey: authState.publicKey };
+  if (payload) headers['content-type'] = 'application/json';
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await fetch(`${authState.supabaseUrl}/auth/v1/${endpoint}`, { method, headers, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.msg || data.message || data.error_description || data.error || 'The sign-in request could not be completed.');
+  return data;
+}
+
+async function createPkcePair() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const bytes = crypto.getRandomValues(new Uint8Array(64));
+  const verifier = [...bytes].map(byte => alphabet[byte % alphabet.length]).join('');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return { verifier, challenge };
+}
+
+async function accessToken() {
+  if (!authState.enabled || !authState.session) return '';
+  if (authState.session.expires_at > Date.now() + 45_000) return authState.session.access_token;
+  try {
+    const refreshed = await authRequest('token?grant_type=refresh_token', { body: { refresh_token: authState.session.refresh_token } });
+    storeAuthSession(refreshed);
+    return authState.session.access_token;
+  } catch {
+    clearAuthSession();
+    return '';
+  }
+}
+
+function showAuthMessage(message, kind = 'info') {
+  const target = $('#auth-message');
+  target.textContent = message || '';
+  target.className = `auth-message ${kind}`;
+  target.hidden = !message;
+}
+
+function showAuthScreen(message = '') {
+  document.body.classList.remove('auth-checking');
+  document.body.classList.add('auth-required');
+  $('#auth-screen').hidden = false;
+  if (message) showAuthMessage(message, 'error');
+}
+
+function showWorkspace(user = authState.user) {
+  document.body.classList.remove('auth-checking', 'auth-required');
+  $('#auth-screen').hidden = true;
+  const email = user?.email || '';
+  if (els.profileName) els.profileName.textContent = email ? email.split('@')[0] : 'Orefyspace';
+  if (els.profileEmail) els.profileEmail.textContent = email || 'Personal workspace';
+  if (els.profileAvatar) els.profileAvatar.textContent = email ? email[0].toUpperCase() : 'O';
+  if (els.signOut) els.signOut.hidden = !authState.enabled;
+}
+
+function setAuthMode(mode) {
+  authState.mode = mode === 'signup' ? 'signup' : 'signin';
+  const signup = authState.mode === 'signup';
+  $('#auth-title').textContent = signup ? 'Create your account' : 'Welcome back';
+  $('#auth-description').textContent = signup ? 'Create an account to keep your workspace in sync.' : 'Sign in to continue to your workspace.';
+  $('#auth-submit').textContent = signup ? 'Create account' : 'Continue';
+  $('#auth-switch-prompt').textContent = signup ? 'Already have an account?' : 'New to Orefyspace?';
+  $('#auth-switch-mode').textContent = signup ? 'Sign in' : 'Create an account';
+  $('#auth-password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('#auth-password').minLength = signup ? 8 : 0;
+  $('#auth-password').placeholder = signup ? 'At least 8 characters' : 'Enter your password';
+  showAuthMessage('');
+}
+
+function authErrorText(value) {
+  return typeof value === 'string' ? value.replace(/[_-]+/g, ' ') : 'The sign-in request could not be completed.';
+}
+
+async function handleAuthCallback() {
+  const callbackUrl = new URL(window.location.href);
+  const providerError = callbackUrl.searchParams.get('error_description') || callbackUrl.searchParams.get('error');
+  if (providerError) {
+    localStorage.removeItem('orefyspace.auth.pkce');
+    history.replaceState({}, document.title, callbackUrl.pathname);
+    throw new Error(authErrorText(providerError));
+  }
+  const hash = new URLSearchParams(callbackUrl.hash.replace(/^#/, ''));
+  const implicitAccessToken = hash.get('access_token');
+  const implicitRefreshToken = hash.get('refresh_token');
+  if (implicitAccessToken && implicitRefreshToken) {
+    storeAuthSession({ access_token: implicitAccessToken, refresh_token: implicitRefreshToken, expires_in: hash.get('expires_in') || 3600 });
+    history.replaceState({}, document.title, callbackUrl.pathname);
+  } else if (callbackUrl.searchParams.has('code')) {
+    const verifier = localStorage.getItem('orefyspace.auth.pkce');
+    if (!verifier) throw new Error('This sign-in link has expired. Please start again.');
+    const code = callbackUrl.searchParams.get('code');
+    const session = await authRequest('token?grant_type=pkce', { body: { auth_code: code, code_verifier: verifier } });
+    storeAuthSession(session);
+    localStorage.removeItem('orefyspace.auth.pkce');
+    history.replaceState({}, document.title, callbackUrl.pathname);
+  }
+}
+
+async function verifyBrowserSession() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem('orefyspace.auth.session') || 'null'); } catch { saved = null; }
+  if (saved?.access_token && saved?.refresh_token && Number.isFinite(saved.expires_at)) authState.session = saved;
+  const token = await accessToken();
+  if (!token) return false;
+  try {
+    authState.user = await authRequest('user', { method: 'GET', token });
+    return Boolean(authState.user?.id);
+  } catch {
+    clearAuthSession();
+    return false;
+  }
+}
+
+async function initializeAuth() {
+  wireAuthEvents();
+  try {
+    const response = await fetch('/api/auth/config', { cache: 'no-store' });
+    const config = await response.json();
+    authState.enabled = Boolean(config.enabled);
+    authState.required = Boolean(config.required);
+    authState.supabaseUrl = config.supabaseUrl || '';
+    authState.publicKey = config.publicKey || '';
+  } catch {
+    showAuthScreen('Could not connect to the sign-in service. Refresh the page and try again.');
+    return false;
+  }
+  if (!authState.enabled) {
+    if (authState.required) {
+      showAuthScreen('Authentication is required, but the server is missing SUPABASE_URL and SUPABASE_ANON_KEY.');
+      document.querySelectorAll('#auth-form input, #auth-form button, [data-auth-provider]').forEach(control => { control.disabled = true; });
+      return false;
+    }
+    document.body.classList.remove('auth-checking');
+    showWorkspace(null);
+    return true;
+  }
+  try { await handleAuthCallback(); }
+  catch (error) { clearAuthSession(); showAuthMessage(error.message, 'error'); }
+  if (await verifyBrowserSession()) { showWorkspace(); return true; }
+  showAuthScreen();
+  return false;
+}
+
+function wireAuthEvents() {
+  $('#auth-switch-mode').addEventListener('click', () => setAuthMode(authState.mode === 'signup' ? 'signin' : 'signup'));
+  $('#auth-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const email = $('#auth-email').value.trim();
+    const password = $('#auth-password').value;
+    const signup = authState.mode === 'signup';
+    if (signup && password.length < 8) return showAuthMessage('Use a password with at least 8 characters.', 'error');
+    const submit = $('#auth-submit');
+    submit.disabled = true;
+    submit.textContent = signup ? 'Creating account…' : 'Signing in…';
+    showAuthMessage('');
+    try {
+      const endpoint = signup ? `signup?redirect_to=${encodeURIComponent(`${window.location.origin}/`)}` : 'token?grant_type=password';
+      const signupPkce = signup ? await createPkcePair() : null;
+      if (signupPkce) localStorage.setItem('orefyspace.auth.pkce', signupPkce.verifier);
+      const result = await authRequest(endpoint, { body: { email, password, ...(signupPkce ? { code_challenge: signupPkce.challenge, code_challenge_method: 's256' } : {}) } });
+      if (signup && !result.access_token) {
+        showAuthMessage('Check your email for a confirmation link. Follow it to finish creating your account.', 'success');
+        return;
+      }
+      if (signup) localStorage.removeItem('orefyspace.auth.pkce');
+      storeAuthSession(result);
+      if (workspaceStarted) return window.location.reload();
+      showWorkspace(result.user);
+      startWorkspace();
+    } catch (error) {
+      if (signup) localStorage.removeItem('orefyspace.auth.pkce');
+      showAuthMessage(error.message, 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = signup ? 'Create account' : 'Continue';
+    }
+  });
+  document.querySelectorAll('[data-auth-provider]').forEach(button => button.addEventListener('click', () => beginProviderSignIn(button.dataset.authProvider, button)));
+  els.signOut?.addEventListener('click', async () => {
+    const token = authState.session?.access_token;
+    if (token) try { await authRequest('logout?scope=local', { token }); } catch { /* clear the local session even if remote logout is unreachable */ }
+    clearAuthSession();
+    window.location.reload();
+  });
+}
+
+async function beginProviderSignIn(provider, button) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  try {
+    const { verifier, challenge } = await createPkcePair();
+    localStorage.setItem('orefyspace.auth.pkce', verifier);
+    const url = new URL(`${authState.supabaseUrl}/auth/v1/authorize`);
+    url.searchParams.set('provider', provider);
+    url.searchParams.set('redirect_to', `${window.location.origin}${window.location.pathname}`);
+    url.searchParams.set('code_challenge', challenge);
+    url.searchParams.set('code_challenge_method', 's256');
+    if (provider === 'azure') url.searchParams.set('scopes', 'email');
+    window.location.assign(url.toString());
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalText;
+    showAuthMessage(`Could not start sign-in: ${error.message}`, 'error');
+  }
+}
+
+async function apiFetch(path, options = {}) {
+  const token = await accessToken();
+  const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await fetch(path, { ...options, headers });
+  if (authState.enabled && response.status === 401) {
+    clearAuthSession();
+    showAuthScreen('Your session expired. Sign in again to continue.');
+  }
+  return response;
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } });
+  const response = await apiFetch(path, options);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error([data.error, data.detail].filter(Boolean).join(' ') || 'Something went wrong.');
   return data;
@@ -214,7 +451,7 @@ async function sendMessage(text = els.input.value.trim()) {
       : 'Give balanced answers: clear, practical, and appropriately detailed.';
   const messages = [{ role: 'system', content: `You are Orefyspace AI, a practical and encouraging personal AI workspace assistant. ${densityInstruction}` }, ...conversation.messages.filter(message => !message.pending).map(message => ({ role: message.role, content: message.content }))];
   try {
-    const response = await fetch('/api/chat', { method: 'POST', signal: state.abortController.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: state.selectedModel, messages }) });
+    const response = await apiFetch('/api/chat', { method: 'POST', signal: state.abortController.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: state.selectedModel, messages }) });
     if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error([error.error, error.detail].filter(Boolean).join(' ') || 'The model could not answer.'); }
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
     while (true) {
@@ -244,7 +481,7 @@ function retryLastPrompt() {
 }
 
 async function exportConversation(id) {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/export`);
+  const response = await apiFetch(`/api/conversations/${encodeURIComponent(id)}/export`);
   if (!response.ok) throw new Error('Could not export this conversation.');
   const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = response.headers.get('content-disposition')?.match(/filename="([^"]+)"/)?.[1] || 'conversation.md'; link.click(); URL.revokeObjectURL(link.href);
 }
@@ -330,4 +567,13 @@ function wireEvents() {
   document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); createConversation(); } if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); els.search.focus(); } if (event.key === 'Escape') { ['model-modal', 'settings-modal', 'projects-modal', 'prompts-modal'].forEach(closeModal); } });
 }
 
-document.addEventListener('DOMContentLoaded', async () => { wireEvents(); await Promise.all([loadModels(), loadConversations(), loadWorkspaceLibraries()]); });
+function startWorkspace() {
+  if (workspaceStarted) return;
+  workspaceStarted = true;
+  wireEvents();
+  Promise.all([loadModels(), loadConversations(), loadWorkspaceLibraries()]);
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  if (await initializeAuth()) startWorkspace();
+});

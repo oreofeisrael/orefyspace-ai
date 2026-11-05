@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#00150B" />
+    <meta name="theme-color" content="#ffffff" />
     <meta name="description" content="Orefyspace AI — a personal AI workspace powered by OpenRouter." />
     <title>Orefyspace AI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -11,7 +11,30 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="auth-checking" data-theme="light">
+    <section class="auth-screen" id="auth-screen" hidden aria-labelledby="auth-title">
+      <div class="auth-card">
+        <div class="auth-brand"><span class="auth-brand-mark" aria-hidden="true">O</span><span>Orefyspace <strong>AI</strong></span></div>
+        <div class="auth-heading"><h1 id="auth-title">Welcome back</h1><p id="auth-description">Sign in to continue to your workspace.</p></div>
+        <div class="auth-message" id="auth-message" role="status" aria-live="polite" hidden></div>
+        <div class="auth-providers" aria-label="Continue with a provider">
+          <button type="button" class="auth-provider-button" data-auth-provider="google"><span class="provider-g" aria-hidden="true">G</span>Continue with Google</button>
+          <button type="button" class="auth-provider-button" data-auth-provider="apple"><span class="provider-apple" aria-hidden="true">A</span>Continue with Apple</button>
+          <button type="button" class="auth-provider-button" data-auth-provider="azure"><span class="provider-ms" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Continue with Microsoft</button>
+        </div>
+        <div class="auth-divider"><span>or continue with email</span></div>
+        <form id="auth-form" class="auth-form">
+          <label for="auth-email">Email</label>
+          <input id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+          <label for="auth-password">Password</label>
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+          <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
+        </form>
+        <p class="auth-switch-line"><span id="auth-switch-prompt">New to Orefyspace?</span> <button type="button" id="auth-switch-mode">Create an account</button></p>
+        <p class="auth-terms">Email and password sign-in is managed by your Supabase Auth project.</p>
+      </div>
+    </section>
+
     <div class="app-shell">
       <aside class="sidebar" id="sidebar" aria-label="Conversation navigation">
         <div class="sidebar-top">
@@ -34,7 +57,7 @@
         <div class="sidebar-bottom">
           <div class="status-row"><span class="status-dot"></span><span id="mode-label">Checking connection</span></div>
           <button class="sidebar-action" id="open-settings"><span>⚙</span> Settings</button>
-          <div class="profile-row"><div class="avatar">O</div><div><strong>Orefyspace</strong><small>Personal workspace</small></div><span class="more">•••</span></div>
+          <div class="profile-row"><div class="avatar" id="profile-avatar">O</div><div class="profile-copy"><strong id="profile-name">Orefyspace</strong><small id="profile-email">Personal workspace</small></div><button class="sign-out-button" id="sign-out-button" type="button" hidden>Sign out</button></div>
         </div>
       </aside>
 
@@ -49,8 +72,8 @@
 
         <section class="workspace" id="workspace">
           <div class="welcome" id="welcome-state">
-            <div class="welcome-heading"><span class="spark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 3.5c1.15 7.1 4.25 10.2 11.35 11.35C22.25 16 19.15 19.1 18 26.2 16.85 19.1 13.75 16 6.65 14.85 13.75 13.7 16.85 10.6 18 3.5Z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M29 25c.55 3.4 2.05 4.9 5.5 5.5-3.45.55-4.95 2.05-5.5 5.5-.55-3.45-2.05-4.95-5.5-5.5 3.45-.6 4.95-2.1 5.5-5.5Z" fill="currentColor"/></svg></span><h1>What are we building today?</h1><span class="demo-pill" id="demo-pill" hidden>Demo mode</span></div>
-            <p>Your ideas. Your models. Your AI workspace.</p>
+            <div class="welcome-heading"><span class="spark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 3.5c1.15 7.1 4.25 10.2 11.35 11.35C22.25 16 19.15 19.1 18 26.2 16.85 19.1 13.75 16 6.65 14.85 13.75 13.7 16.85 10.6 18 3.5Z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M29 25c.55 3.4 2.05 4.9 5.5 5.5-3.45.55-4.95 2.05-5.5 5.5-.55-3.45-2.05-4.95-5.5-5.5 3.45-.6 4.95-2.1 5.5-5.5Z" fill="currentColor"/></svg></span><h1>What can I help with today?</h1><span class="demo-pill" id="demo-pill" hidden>Demo mode</span></div>
+            <p>Ask a question, explore an idea, or get help with a task.</p>
             <div class="prompt-grid">
               <button class="prompt-card" data-prompt="Help me build this idea into a practical, maintainable plan."><span class="prompt-icon">↗</span><span class="prompt-copy"><strong>Build something</strong><small>Turn an idea into a clear next step.</small></span></button>
               <button class="prompt-card" data-prompt="Write a precise prompt for the outcome I want to achieve."><span class="prompt-icon">⌘</span><span class="prompt-copy"><strong>Write a prompt</strong><small>Give your models better direction.</small></span></button>
@@ -82,7 +105,7 @@
 
     <div class="modal-backdrop" id="prompts-modal" hidden><section class="modal library-modal" role="dialog" aria-modal="true" aria-labelledby="prompts-title"><div class="modal-header"><div><span class="eyebrow">Prompt workspace</span><h2 id="prompts-title">Saved prompts</h2><p class="modal-subtitle">Insert reusable instructions directly into the composer.</p></div><button class="icon-button" data-close-modal="prompts-modal" aria-label="Close prompt library">×</button></div><form class="prompt-form" id="prompt-form"><div class="form-row"><input id="prompt-title" placeholder="Prompt title" maxlength="120" required /><input id="prompt-category" placeholder="Category e.g. Coding" maxlength="40" /></div><textarea id="prompt-content" placeholder="Write the reusable prompt..." maxlength="20000" required></textarea><button class="button-primary" type="submit">Save prompt</button></form><div class="library-toolbar"><input id="prompt-search" placeholder="Search saved prompts" aria-label="Search saved prompts" /><select id="prompt-category-filter"><option value="all">All categories</option></select></div><div class="library-list" id="prompt-list"></div></section></div>
 
-    <div class="modal-backdrop" id="settings-modal" hidden><section class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div class="modal-header"><div><span class="eyebrow">Workspace controls</span><h2 id="settings-title">Settings</h2></div><button class="icon-button" data-close-modal="settings-modal" aria-label="Close settings">×</button></div><div class="settings-body"><label class="setting-row"><span><strong>Default model</strong><small>Use this model for new conversations.</small></span><select id="default-model-setting"></select></label><label class="setting-row"><span><strong>Response density</strong><small>How much context should answers include?</small></span><select id="response-density"><option value="balanced">Balanced</option><option value="concise">Concise</option><option value="detailed">Detailed</option></select></label><label class="setting-row"><span><strong>Theme</strong><small>Orefyspace is designed dark-first.</small></span><select id="theme-setting"><option value="dark">Dark</option><option value="light">Light</option></select></label><div class="settings-footer"><span id="settings-status">Changes save automatically.</span><button class="button-primary" data-close-modal="settings-modal">Done</button></div></div></section></div>
+    <div class="modal-backdrop" id="settings-modal" hidden><section class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div class="modal-header"><div><span class="eyebrow">Workspace controls</span><h2 id="settings-title">Settings</h2></div><button class="icon-button" data-close-modal="settings-modal" aria-label="Close settings">×</button></div><div class="settings-body"><label class="setting-row"><span><strong>Default model</strong><small>Use this model for new conversations.</small></span><select id="default-model-setting"></select></label><label class="setting-row"><span><strong>Response density</strong><small>How much context should answers include?</small></span><select id="response-density"><option value="balanced">Balanced</option><option value="concise">Concise</option><option value="detailed">Detailed</option></select></label><label class="setting-row"><span><strong>Theme</strong><small>Choose a light or dark workspace appearance.</small></span><select id="theme-setting"><option value="dark">Dark</option><option value="light">Light</option></select></label><div class="settings-footer"><span id="settings-status">Changes save automatically.</span><button class="button-primary" data-close-modal="settings-modal">Done</button></div></div></section></div>
 
     <script src="/app.js" type="module"></script>
   </body>
