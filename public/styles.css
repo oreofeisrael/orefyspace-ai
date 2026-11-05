@@ -167,6 +167,7 @@ html[data-theme="light"] .code-block { background: #e8f6ea; }
 [hidden] { display: none !important; }
 body { min-height: 100vh; background: #000; }
 .app-shell {
+  display: block;
   width: calc(100% - 60px);
   max-width: 1440px;
   min-height: calc(100vh - 12px);
