@@ -37,7 +37,7 @@ const allowedRoles = new Set(['system', 'user', 'assistant']);
 const chatRateWindowMs = clamp(Number(process.env.CHAT_RATE_WINDOW_MS || 600_000), 60_000, 3_600_000, 600_000);
 const chatRateLimit = clamp(Number(process.env.CHAT_RATE_LIMIT || 30), 1, 300, 30);
 const rateBuckets = new Map();
-const persistence = { mode: 'filesystem', pool: null, state: { conversations: [], projects: [], prompts: [] } };
+const persistence = { mode: 'filesystem', pool: null, state: { conversations: [], projects: [], prompts: [] }, userStates: new Map() };
 const workspaceContext = new AsyncLocalStorage();
 const currentWorkspace = () => workspaceContext.getStore()?.state || persistence.state;
 const providerRegistry = createProviderRegistry({ env: process.env, timeoutMs: requestTimeoutMs, maxOutputTokens });
@@ -105,26 +105,35 @@ function readFileArray(file) {
 }
 
 async function loadUserWorkspace(user) {
+  if (persistence.userStates.has(user.id)) return persistence.userStates.get(user.id);
   if (persistence.pool) {
     const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_user_workspace_state WHERE user_id = $1', [user.id]);
-    if (result.rows[0]) return { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
+    if (result.rows[0]) {
+      const state = { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
+      persistence.userStates.set(user.id, state);
+      return state;
+    }
     const ownerEmail = (process.env.LEGACY_WORKSPACE_OWNER_EMAIL || '').trim().toLowerCase();
     if (ownerEmail && user.email?.toLowerCase() === ownerEmail) {
       const legacy = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
       if (legacy.rows[0]) {
         const state = { conversations: legacy.rows[0].conversations || [], projects: legacy.rows[0].projects || [], prompts: legacy.rows[0].prompts || [] };
         await persistence.pool.query('INSERT INTO orefyspace_user_workspace_state (user_id, conversations, projects, prompts) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb) ON CONFLICT (user_id) DO NOTHING', [user.id, JSON.stringify(state.conversations), JSON.stringify(state.projects), JSON.stringify(state.prompts)]);
+        persistence.userStates.set(user.id, state);
         return state;
       }
     }
-    return { conversations: [], projects: [], prompts: [] };
+    const state = { conversations: [], projects: [], prompts: [] };
+    persistence.userStates.set(user.id, state);
+    return state;
   }
   const userDir = join(dataDir, 'users', user.id);
   mkdirSync(userDir, { recursive: true });
   const read = (name) => { try { const value = JSON.parse(readFileSync(join(userDir, name), 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; } };
-  return { conversations: read('conversations.json'), projects: read('projects.json'), prompts: read('prompts.json') };
+  const state = { conversations: read('conversations.json'), projects: read('projects.json'), prompts: read('prompts.json') };
+  persistence.userStates.set(user.id, state);
+  return state;
 }
-
 async function persistWorkspace() {
   const context = workspaceContext.getStore();
   if (!context?.userId) throw new Error('Cannot save workspace without an authenticated user context.');
