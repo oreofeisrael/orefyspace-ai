@@ -90,8 +90,6 @@ async function initializePersistence() {
     const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
     if (result.rows[0]) {
       persistence.state = { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
-    } else {
-      await persistWorkspace();
     }
     persistence.mode = 'postgres';
     console.log('Persistent storage: PostgreSQL');
