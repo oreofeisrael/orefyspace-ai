@@ -406,7 +406,11 @@ async function startWorkspace() {
 async function initializeAuth() {
   const configResponse = await fetch('/api/auth/config');
   const config = await configResponse.json();
-  if (!config.configured) { renderAuthScreen('Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to your Render environment variables.'); return; }
+  if (!config.configured) {
+    renderAuthScreen('Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to your Render environment variables, then redeploy.');
+    document.querySelectorAll('#auth-form input, #auth-form button, #auth-switch').forEach(control => { control.disabled = true; });
+    return;
+  }
   supabase = createClient(config.url, config.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
   const { data } = await supabase.auth.getSession();
   authSession = data.session; authUser = data.session?.user || null;
