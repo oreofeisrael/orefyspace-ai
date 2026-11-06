@@ -1,3 +1,10 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+let supabase = null;
+let authSession = null;
+let authUser = null;
+let workspaceStarted = false;
+
 const state = {
   conversations: [],
   currentId: null,
@@ -57,7 +64,7 @@ function showError(message, canRetry = false) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } });
+  const response = await fetch(path, { ...options, headers: { 'content-type': 'application/json', ...(authSession?.access_token ? { authorization: `Bearer ${authSession.access_token}` } : {}), ...(options.headers || {}) } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error([data.error, data.detail].filter(Boolean).join(' ') || 'Something went wrong.');
   return data;
@@ -214,7 +221,7 @@ async function sendMessage(text = els.input.value.trim()) {
       : 'Give balanced answers: clear, practical, and appropriately detailed.';
   const messages = [{ role: 'system', content: `You are Orefyspace AI, a practical and encouraging personal AI workspace assistant. ${densityInstruction}` }, ...conversation.messages.filter(message => !message.pending).map(message => ({ role: message.role, content: message.content }))];
   try {
-    const response = await fetch('/api/chat', { method: 'POST', signal: state.abortController.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: state.selectedModel, messages }) });
+    const response = await fetch('/api/chat', { method: 'POST', signal: state.abortController.signal, headers: { 'content-type': 'application/json', ...(authSession?.access_token ? { authorization: `Bearer ${authSession.access_token}` } : {}) }, body: JSON.stringify({ model: state.selectedModel, messages }) });
     if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error([error.error, error.detail].filter(Boolean).join(' ') || 'The model could not answer.'); }
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
     while (true) {
@@ -244,7 +251,7 @@ function retryLastPrompt() {
 }
 
 async function exportConversation(id) {
-  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/export`);
+  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/export`, { headers: authSession?.access_token ? { authorization: `Bearer ${authSession.access_token}` } : {} });
   if (!response.ok) throw new Error('Could not export this conversation.');
   const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = response.headers.get('content-disposition')?.match(/filename="([^"]+)"/)?.[1] || 'conversation.md'; link.click(); URL.revokeObjectURL(link.href);
 }
@@ -330,4 +337,88 @@ function wireEvents() {
   document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); createConversation(); } if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); els.search.focus(); } if (event.key === 'Escape') { ['model-modal', 'settings-modal', 'projects-modal', 'prompts-modal'].forEach(closeModal); } });
 }
 
-document.addEventListener('DOMContentLoaded', async () => { wireEvents(); await Promise.all([loadModels(), loadConversations(), loadWorkspaceLibraries()]); });
+
+function renderAuthScreen(message = '') {
+  let overlay = document.getElementById('auth-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'auth-overlay';
+    overlay.className = 'auth-overlay';
+    overlay.innerHTML = `<section class="auth-card"><div class="auth-brand"><span class="auth-mark">O</span><div><strong>Orefyspace <em>AI</em></strong><small>YOUR PERSONAL AI WORKSPACE</small></div></div><h1 id="auth-heading">Sign in to your workspace</h1><p id="auth-description">Access your conversations, projects and saved prompts securely.</p><form id="auth-form"><label>Email address<input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com" required></label><label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="8" placeholder="At least 8 characters" required></label><button class="button-primary auth-submit" id="auth-submit" type="submit">Sign in</button></form><div class="auth-message" id="auth-message" role="status"></div><button class="auth-switch" id="auth-switch" type="button">New here? Create an account</button></section>`;
+    document.body.appendChild(overlay);
+    let mode = 'signin';
+    const form = overlay.querySelector('#auth-form');
+    const switcher = overlay.querySelector('#auth-switch');
+    switcher.addEventListener('click', () => {
+      mode = mode === 'signin' ? 'signup' : 'signin';
+      overlay.querySelector('#auth-heading').textContent = mode === 'signin' ? 'Sign in to your workspace' : 'Create your account';
+      overlay.querySelector('#auth-description').textContent = mode === 'signin' ? 'Access your conversations, projects and saved prompts securely.' : 'Create a private Orefyspace AI workspace.';
+      overlay.querySelector('#auth-submit').textContent = mode === 'signin' ? 'Sign in' : 'Create account';
+      switcher.textContent = mode === 'signin' ? 'New here? Create an account' : 'Already have an account? Sign in';
+      overlay.querySelector('#auth-password').autocomplete = mode === 'signin' ? 'current-password' : 'new-password';
+      overlay.querySelector('#auth-message').textContent = '';
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = overlay.querySelector('#auth-submit');
+      const message = overlay.querySelector('#auth-message');
+      button.disabled = true; button.textContent = mode === 'signin' ? 'Signing in…' : 'Creating account…'; message.textContent = '';
+      const email = overlay.querySelector('#auth-email').value.trim();
+      const password = overlay.querySelector('#auth-password').value;
+      try {
+        const result = mode === 'signin'
+          ? await supabase.auth.signInWithPassword({ email, password })
+          : await supabase.auth.signUp({ email, password });
+        if (result.error) throw result.error;
+        if (result.data.session) {
+          authSession = result.data.session; authUser = result.data.user; overlay.remove(); await startWorkspace();
+        } else if (mode === 'signup') {
+          message.textContent = 'Account created. Check your email to confirm it, then sign in.';
+        }
+      } catch (error) { message.textContent = error.message || 'Authentication failed.'; }
+      finally { button.disabled = false; button.textContent = mode === 'signin' ? 'Sign in' : 'Create account'; }
+    });
+  }
+  overlay.querySelector('#auth-message').textContent = message;
+  overlay.hidden = false;
+}
+
+async function startWorkspace() {
+  if (workspaceStarted || !authSession) return;
+  workspaceStarted = true;
+  document.getElementById('auth-overlay')?.remove();
+  const profile = document.querySelector('.profile-row');
+  if (profile) {
+    const name = authUser?.email || 'Signed in';
+    profile.querySelector('strong').textContent = name;
+    profile.querySelector('small').textContent = 'Private workspace';
+    if (!document.getElementById('sign-out-button')) {
+      const signout = document.createElement('button');
+      signout.id = 'sign-out-button'; signout.className = 'sidebar-action'; signout.textContent = '↪ Sign out';
+      signout.addEventListener('click', async () => { await supabase.auth.signOut(); authSession = null; authUser = null; workspaceStarted = false; state.conversations = []; state.projects = []; state.prompts = []; renderAuthScreen(); });
+      profile.insertAdjacentElement('afterend', signout);
+    }
+  }
+  wireEvents();
+  await Promise.all([loadModels(), loadConversations(), loadWorkspaceLibraries()]);
+}
+
+async function initializeAuth() {
+  const configResponse = await fetch('/api/auth/config');
+  const config = await configResponse.json();
+  if (!config.configured) { renderAuthScreen('Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to your Render environment variables.'); return; }
+  supabase = createClient(config.url, config.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+  const { data } = await supabase.auth.getSession();
+  authSession = data.session; authUser = data.session?.user || null;
+  supabase.auth.onAuthStateChange((_event, session) => {
+    authSession = session; authUser = session?.user || null;
+    if (session) startWorkspace();
+    else if (workspaceStarted) { workspaceStarted = false; location.reload(); }
+  });
+  if (authSession) await startWorkspace(); else renderAuthScreen();
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  try { await initializeAuth(); }
+  catch (error) { renderAuthScreen(`Could not initialise authentication: ${error.message}`); }
+});
