@@ -85,6 +85,7 @@ async function initializePersistence() {
   try {
     const { Pool } = await import('pg');
     persistence.pool = new Pool({ connectionString: databaseUrl, ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false }, max: 5 });
+    await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_workspace_state (id TEXT PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
     await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_user_workspace_state (user_id UUID PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
     const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
     if (result.rows[0]) {
