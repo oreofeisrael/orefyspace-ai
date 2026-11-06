@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
@@ -36,7 +37,9 @@ const allowedRoles = new Set(['system', 'user', 'assistant']);
 const chatRateWindowMs = clamp(Number(process.env.CHAT_RATE_WINDOW_MS || 600_000), 60_000, 3_600_000, 600_000);
 const chatRateLimit = clamp(Number(process.env.CHAT_RATE_LIMIT || 30), 1, 300, 30);
 const rateBuckets = new Map();
-const persistence = { mode: 'filesystem', pool: null, state: { conversations: [], projects: [], prompts: [] } };
+const persistence = { mode: 'filesystem', pool: null, state: { conversations: [], projects: [], prompts: [] }, userStates: new Map() };
+const workspaceContext = new AsyncLocalStorage();
+const currentWorkspace = () => workspaceContext.getStore()?.state || persistence.state;
 const providerRegistry = createProviderRegistry({ env: process.env, timeoutMs: requestTimeoutMs, maxOutputTokens });
 
 mkdirSync(dataDir, { recursive: true });
@@ -52,23 +55,23 @@ if (!existsSync(promptsFile)) writeFileSync(promptsFile, JSON.stringify([
 const json = (value, status = 200) => ({ status, body: JSON.stringify(value), headers: { 'content-type': 'application/json; charset=utf-8' } });
 
 function readConversations() {
-  return persistence.state.conversations;
+  return currentWorkspace().conversations;
 }
 
 async function saveConversations(conversations) {
-  persistence.state.conversations = conversations;
+  currentWorkspace().conversations = conversations;
   await persistWorkspace();
 }
 
 function readJsonFile(file, fallback = []) {
-  if (file === projectsFile) return persistence.state.projects;
-  if (file === promptsFile) return persistence.state.prompts;
+  if (file === projectsFile) return currentWorkspace().projects;
+  if (file === promptsFile) return currentWorkspace().prompts;
   try { const value = JSON.parse(readFileSync(file, 'utf8')); return Array.isArray(value) ? value : fallback; } catch { return fallback; }
 }
 
 async function saveJsonFile(file, value) {
-  if (file === projectsFile) persistence.state.projects = value;
-  if (file === promptsFile) persistence.state.prompts = value;
+  if (file === projectsFile) currentWorkspace().projects = value;
+  if (file === promptsFile) currentWorkspace().prompts = value;
   await persistWorkspace();
 }
 
@@ -83,11 +86,10 @@ async function initializePersistence() {
     const { Pool } = await import('pg');
     persistence.pool = new Pool({ connectionString: databaseUrl, ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false }, max: 5 });
     await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_workspace_state (id TEXT PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await persistence.pool.query(`CREATE TABLE IF NOT EXISTS orefyspace_user_workspace_state (user_id UUID PRIMARY KEY, conversations JSONB NOT NULL DEFAULT '[]', projects JSONB NOT NULL DEFAULT '[]', prompts JSONB NOT NULL DEFAULT '[]', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
     const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
     if (result.rows[0]) {
       persistence.state = { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
-    } else {
-      await persistWorkspace();
     }
     persistence.mode = 'postgres';
     console.log('Persistent storage: PostgreSQL');
@@ -102,14 +104,49 @@ function readFileArray(file) {
   try { const value = JSON.parse(readFileSync(file, 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; }
 }
 
-async function persistWorkspace() {
+async function loadUserWorkspace(user) {
+  if (persistence.userStates.has(user.id)) return persistence.userStates.get(user.id);
   if (persistence.pool) {
-    await persistence.pool.query(`INSERT INTO orefyspace_workspace_state (id, conversations, projects, prompts, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET conversations = EXCLUDED.conversations, projects = EXCLUDED.projects, prompts = EXCLUDED.prompts, updated_at = NOW()`, ['default', JSON.stringify(persistence.state.conversations), JSON.stringify(persistence.state.projects), JSON.stringify(persistence.state.prompts)]);
+    const result = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_user_workspace_state WHERE user_id = $1', [user.id]);
+    if (result.rows[0]) {
+      const state = { conversations: result.rows[0].conversations || [], projects: result.rows[0].projects || [], prompts: result.rows[0].prompts || [] };
+      persistence.userStates.set(user.id, state);
+      return state;
+    }
+    const ownerEmail = (process.env.LEGACY_WORKSPACE_OWNER_EMAIL || '').trim().toLowerCase();
+    if (ownerEmail && user.email?.toLowerCase() === ownerEmail) {
+      const legacy = await persistence.pool.query('SELECT conversations, projects, prompts FROM orefyspace_workspace_state WHERE id = $1', ['default']);
+      if (legacy.rows[0]) {
+        const state = { conversations: legacy.rows[0].conversations || [], projects: legacy.rows[0].projects || [], prompts: legacy.rows[0].prompts || [] };
+        await persistence.pool.query('INSERT INTO orefyspace_user_workspace_state (user_id, conversations, projects, prompts) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb) ON CONFLICT (user_id) DO NOTHING', [user.id, JSON.stringify(state.conversations), JSON.stringify(state.projects), JSON.stringify(state.prompts)]);
+        persistence.userStates.set(user.id, state);
+        return state;
+      }
+    }
+    const state = { conversations: [], projects: [], prompts: [] };
+    persistence.userStates.set(user.id, state);
+    return state;
+  }
+  const userDir = join(dataDir, 'users', user.id);
+  mkdirSync(userDir, { recursive: true });
+  const read = (name) => { try { const value = JSON.parse(readFileSync(join(userDir, name), 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; } };
+  const state = { conversations: read('conversations.json'), projects: read('projects.json'), prompts: read('prompts.json') };
+  persistence.userStates.set(user.id, state);
+  return state;
+}
+async function persistWorkspace() {
+  const context = workspaceContext.getStore();
+  if (!context?.userId) throw new Error('Cannot save workspace without an authenticated user context.');
+  const state = context.state;
+  if (persistence.pool) {
+    await persistence.pool.query(`INSERT INTO orefyspace_user_workspace_state (user_id, conversations, projects, prompts, updated_at) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, NOW()) ON CONFLICT (user_id) DO UPDATE SET conversations = EXCLUDED.conversations, projects = EXCLUDED.projects, prompts = EXCLUDED.prompts, updated_at = NOW()`, [context.userId, JSON.stringify(state.conversations), JSON.stringify(state.projects), JSON.stringify(state.prompts)]);
     return;
   }
-  writeFileSync(conversationsFile, JSON.stringify(persistence.state.conversations, null, 2), 'utf8');
-  writeFileSync(projectsFile, JSON.stringify(persistence.state.projects, null, 2), 'utf8');
-  writeFileSync(promptsFile, JSON.stringify(persistence.state.prompts, null, 2), 'utf8');
+  const userDir = join(dataDir, 'users', context.userId);
+  mkdirSync(userDir, { recursive: true });
+  writeFileSync(join(userDir, 'conversations.json'), JSON.stringify(state.conversations, null, 2), 'utf8');
+  writeFileSync(join(userDir, 'projects.json'), JSON.stringify(state.projects, null, 2), 'utf8');
+  writeFileSync(join(userDir, 'prompts.json'), JSON.stringify(state.prompts, null, 2), 'utf8');
 }
 
 async function persistenceHealth() {
@@ -314,7 +351,36 @@ async function tryProviderWithFallback(request, model, messages) {
   }
 }
 
+async function authenticateRequest(request) {
+  const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) return null;
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const anonKey = process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) throw new Error('Supabase authentication is not configured on the server.');
+  const result = await fetch(new URL('/auth/v1/user', supabaseUrl), { headers: { apikey: anonKey, authorization: `Bearer ${token}` } });
+  if (!result.ok) return null;
+  const user = await result.json();
+  return user?.id ? user : null;
+}
+
 async function handleApi(request, response, pathname) {
+  if (request.method === 'GET' && pathname === '/api/health') return handleApiRoutes(request, response, pathname);
+  if (request.method === 'GET' && pathname === '/api/models') return handleApiRoutes(request, response, pathname);
+  if (request.method === 'GET' && pathname === '/api/auth/config') {
+    return send(response, json({ url: process.env.SUPABASE_URL || '', anonKey: process.env.SUPABASE_ANON_KEY || '', configured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) }));
+  }
+  try {
+    const user = await authenticateRequest(request);
+    if (!user) return sendError(response, 401, 'Please sign in to access your workspace.', 'authentication_required');
+    const state = await loadUserWorkspace(user);
+    return workspaceContext.run({ userId: user.id, state }, () => handleApiRoutes(request, response, pathname));
+  } catch (error) {
+    console.error('Authentication/workspace error:', error.message);
+    return sendError(response, 503, error.message || 'Authentication service unavailable.', 'authentication_unavailable');
+  }
+}
+
+async function handleApiRoutes(request, response, pathname) {
   try {
     if (request.method === 'GET' && pathname === '/api/health') return send(response, json({ ok: true, demo: !Object.values(providerRegistry.providers).some(provider => provider.key), defaultModel: defaultModelKey, providers: Object.entries(providerRegistry.providers).map(([id, provider]) => ({ id, name: provider.name, configured: Boolean(provider.key) })), ...(await persistenceHealth()) }));
     if (request.method === 'GET' && pathname === '/api/models') return send(response, json(await listProviderModels()));

@@ -404,3 +404,25 @@ body { display: flow-root; }
 .topbar-actions { margin-top: 25px; }
 .welcome > p { margin-top: 31px; margin-bottom: 25px; }
 .demo-pill { display: none !important; }
+
+
+/* Supabase authentication */
+.auth-overlay { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 50% 10%, rgba(0,240,90,.12), transparent 32rem), rgba(0,10,5,.97); }
+.auth-overlay[hidden] { display: none; }
+.auth-card { width: min(100%, 430px); padding: 34px; border: 1px solid var(--line-strong); border-radius: 22px; background: linear-gradient(155deg, #082918, #04180d); box-shadow: var(--shadow); }
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 34px; }
+.auth-mark { width: 42px; height: 42px; display: grid; place-items: center; border: 2px solid var(--green); border-radius: 50%; color: var(--lime); font-size: 23px; font-weight: 800; }
+.auth-brand strong { display: block; font-size: 17px; letter-spacing: -.04em; }
+.auth-brand em { color: var(--green); font-style: normal; }
+.auth-brand small { display: block; margin-top: 4px; color: var(--dim); font: 9px 'DM Mono', monospace; letter-spacing: .08em; }
+.auth-card h1 { margin: 0 0 9px; font-size: 25px; letter-spacing: -.05em; }
+.auth-card > p { margin: 0 0 25px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.auth-card form { display: grid; gap: 16px; }
+.auth-card label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.auth-card input { width: 100%; min-height: 45px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: 10px; background: rgba(0,0,0,.18); color: var(--text); }
+.auth-submit { width: 100%; min-height: 46px; margin-top: 4px; }
+.auth-submit:disabled { opacity: .65; cursor: wait; }
+.auth-message { min-height: 22px; margin-top: 14px; color: var(--lime); font-size: 12px; line-height: 1.5; }
+.auth-switch { display: block; margin: 8px auto 0; border: 0; background: transparent; color: var(--lime); font-size: 12px; }
+.auth-switch:hover { text-decoration: underline; }
+@media (max-width: 520px) { .auth-card { padding: 26px 21px; } .auth-card h1 { font-size: 22px; } }
