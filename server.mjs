@@ -345,7 +345,7 @@ async function tryProviderWithFallback(request, model, messages) {
 }
 
 async function authenticateRequest(request) {
-  const token = request.headers.authorization?.match(/^Bearer\\s+(.+)$/i)?.[1];
+  const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token) return null;
   const supabaseUrl = process.env.SUPABASE_URL;
   const anonKey = process.env.SUPABASE_ANON_KEY;
